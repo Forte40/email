@@ -1,4 +1,6 @@
 local bit = require("bit")
+local mod = require("mod")
+local base64 = require("base64")
 
 local function hash(pwd, m)
   m = m or 0xFFFFFFFF
@@ -12,7 +14,7 @@ local function hash(pwd, m)
 end
 
 local function primes(limit)
-  local f = io.open("primes.dat", "r")
+  local f = io.open("primes_"..tostring(limit)..".dat", "r")
   if f then
     local primes = {}
     while true do
@@ -41,8 +43,9 @@ local function primes(limit)
     end
   end
 
-  local f = io.open("primes.dat", "w")
+  local f = io.open("primes_"..tostring(limit)..".dat", "w")
   local primes = {2}
+  f:write("2\n")
   for i = 1, sievebound do
     if sieve[i] == false then
       table.insert(primes, 2 * i + 1)
@@ -82,7 +85,7 @@ local function inverse(a, n)
 end
 
 local function genprimes()
-  math.randomseed(0)
+  math.randomseed(os.time())
   local n1, n2
   while n1 == n2 do
     n1, n2 = math.random(513708), math.random(513708)
@@ -126,126 +129,13 @@ local function genkey(p, q, e)
   return {n, e}, {n, d}
 end
 
-local base64 = {}
-for i = 0, 25 do
-  base64[i] = string.char(i + 65)
-  base64[string.char(i + 65)] = i
-  base64[i + 26] = string.char(i + 97)
-  base64[string.char(i + 72)] = i + 26
-  if i < 10 then
-    base64[i + 52] = string.char(i + 48)
-    base64[string.char(i + 48)] = i + 52
-  end
-end
-base64[62] = "+"
-base64["+"] = 62
-base64[63] = "/"
-base64["/"] = 63
-
-local function base64enc(bytes)
-  local result = ""
-  for pos = 1, #bytes, 3 do
-    local bits = (
-      bit.lshift(bytes[pos], 16) +
-      bit.lshift(bytes[pos + 1] or 0, 8) +
-      (bytes[pos + 2] or 0)
-    )
-    result = result .. base64[bit.rshift(bits, 18)     ]
-    result = result .. base64[bit.rshift(bits, 12) % 64]
-    if pos < #bytes then
-      result = result .. base64[bit.rshift(bits, 6 ) % 64]
-      if pos + 1 < #bytes then
-        result = result .. base64[           bits      % 64]
-      end
-    end
-  end
-  result = result .. ({"", "==", "="})[#bytes % 3 + 1]
-  return result
-end
-local function base64enc24(bytes)
-  local result = ""
-  for pos = 1, #bytes do
-    local bits = bytes[pos]
-    print(bit.rshift(bits, 18))
-    result = result .. base64[bit.rshift(bits, 18)     ]
-    print(bit.rshift(bits, 12) % 64)
-    result = result .. base64[bit.rshift(bits, 12) % 64]
-    print(bit.rshift(bits, 6) % 64)
-    result = result .. base64[bit.rshift(bits, 6 ) % 64]
-    print(bits % 64)
-    result = result .. base64[           bits      % 64]
-  end
-  return result
-end
-local function base64encS(data)
-  local bytes = {}
-  for pos = 1, #data do
-    bytes[pos] = data:sub(pos, pos):byte()
-  end
-  return base64enc(bytes)
-end
-
-local function base64dec(data)
-  local result = {}
-  for pos = 1, #data, 4 do
-    local bits = 0
-    local skip = 0
-    for p = 0, 3 do
-      local b = base64[data:sub(pos + p, pos + p)]
-      if b then
-        bits = bits + bit.lshift(b, (4 - p - 1) * 6)
-      else
-        skip = skip + 1
-      end
-    end
-    table.insert(result, bit.rshift(bits, 16))
-    if skip < 2 then
-      table.insert(result, bit.rshift(bits % 65536, 8))
-    end
-    if skip < 1 then
-      table.insert(result, bits % 256)
-    end
-  end
-  return result
-end
-local function base64decS(bytes)
-  local new_bytes = base64dec(bytes)
-  print(#new_bytes)
-  local result = ""
-  for pos = 1, #new_bytes do
-    result = result .. string.char(new_bytes[pos])
-  end
-  return result
-end
-
-local function multmod(a, b, m)
-  local result = 0
-  while a > 0 do
-    if bit.band(a, 1) == 1 then
-      result = result + b
-    end
-    a = math.floor(a / 2)
-    b = b * 2 % m
-  end
-  return result % m
-end
-
-local function crypt(m, key)
+local function crypt(msg, key)
   local n, e = unpack(key)
-  local c = 1
-  while e ~= 0 do
-    if bit.band(e, 1) == 1 then
-      c = multmod(c, m, n)
-    end
-    m = multmod(m, m, n)
-    e = math.floor(e / 2)
-  end
-  return c
+  return mod.exp(msg, e, n)
 end
 
 local function encrypt(data, key)
-  local bytes = {}
-  print("----------")
+  local nums = {}
   for i = 1, #data, 5 do
     local m = 0
     for j = 0, 3 do
@@ -254,19 +144,13 @@ local function encrypt(data, key)
     end
     m = m + (data:sub(i + 4):byte() or 0)
     local c = crypt(m, key)
-    print(m, c)
-    table.insert(bytes, math.floor(c / 16777216))
-    table.insert(bytes, c % 16777216)
+    table.insert(nums, c)
   end
-  print("----------")
-  return base64enc24(bytes)
+  return base64.enc48(nums)
 end
 
 local function decrypt(data, key)
-  local bytes = base64dec(data)
-  for i, v in ipairs(bytes) do
-    print(i, v)
-  end
+  local bytes = base64.dec(data)
   local result = ""
   for i = 1, #bytes, 6 do
     local c = 0
@@ -276,13 +160,11 @@ local function decrypt(data, key)
     end
     c = c + bytes[i + 5]
     local m = crypt(c, key)
-    print(m, c)
     result = result .. string.char(math.floor(m / 4294967296 % 256))
     result = result .. string.char(math.floor(m / 16777216 % 256))
     result = result .. string.char(math.floor(m / 65536 % 256))
     result = result .. string.char(math.floor(m / 256 % 256))
     result = result .. string.char(m % 256)
-    print(result)
   end
   return result
 end
@@ -292,13 +174,19 @@ local function sign(m, key)
   return crypt(h, key)
 end
 
+local tArgs = { ... }
+
 local function test()
   local pub, pri = genkey()
-  print(unpack(pub))
-  print(unpack(pri))
+  print(string.format("%.0f : %.0f", unpack(pub)))
+  print(base64.enc48(pub))
+  local decpub = base64.dec48(base64.enc48(pub))
+  print(string.format("%.0f : %.0f", unpack(decpub)))
+  print(string.format("%.0f : %.0f", unpack(pri)))
+  print(base64.enc48(pri))
   local msg = 65
 
-  local enc = encrypt("Scott", pub)
+  local enc = encrypt(tArgs[1], pub)
   print(enc)
 
   local dec = decrypt(enc, pri)
@@ -317,7 +205,43 @@ local function test()
   --]]
 end
 
-test()
+local function dh()
+  --[[
+  local ps = primes(2^24)
+  for n = #ps, 3, -1 do
+    --print(ps[n])
+    local ps2 = (ps[n] - 1) / 2
+    --print("prime: ", ps[n], ps2)
+    local isprime = true
+    for i = 1, #ps do
+      if ps2 == ps[i] then
+        break
+      elseif ps2 % ps[i] == 0 then
+        isprime = false
+        break
+      end
+    end
+    if isprime then
+      print(ps2, ps2*2+1)
+    end
+  end
+  --]]
+  math.randomseed(os.time())
+  local p = 16776899
+  local g = 5
+  local a = math.random(2, 1000)
+  local A = crypt(g, {p, a})
+
+  local b = math.random(2, 1000)
+  local B = crypt(g, {p, b})
+
+  local s = crypt(B, {p, a})
+  local S = crypt(A, {p, b})
+
+  print(s, S)
+end
+
+dh()
 
 return {
   hash = hash,
